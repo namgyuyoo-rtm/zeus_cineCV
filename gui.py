@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import csv
 import math
-import multiprocessing as mp
+import concurrent.futures
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QProgressBar, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit
 from PySide6.QtCore import Qt, QThread, Signal
@@ -104,14 +104,17 @@ def get_frames(video_path: str, start_frame: int, count: int = None, stride: int
     batch_size = 100
     num_batches = math.ceil(count / batch_size)
 
-    with mp.Pool() as pool:
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = []
         for batch in range(num_batches):
             batch_start = start_frame + batch * batch_size
             batch_count = min(batch_size, count - batch * batch_size)
             
             args = (video_path, batch_start, batch_count, stride, cfa)
-            for frame in pool.imap(process_batch, [args]):
-                yield from frame
+            futures.append(executor.submit(process_batch, args))
+        
+        for future in concurrent.futures.as_completed(futures):
+            yield from future.result()
 
 def process_batch(args):
     video_path, batch_start, batch_count, stride, cfa = args
@@ -199,6 +202,7 @@ class FrameExtractorThread(QThread):
         end_time = time.time()
         total_time = end_time - start_time
         self.finished.emit(total_time)
+        
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
