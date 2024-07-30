@@ -4,7 +4,7 @@ APP = ['gui.py']
 OPTIONS = {
     'argv_emulation': True,
     'packages': ['numpy'],  # Include numpy package
-    'excludes': ['numpy.typing.tests'],  # Exclude the problematic test modules
+    'excludes': ['numpy.typing.tests','fcntl'],  # Exclude the problematic test modules
 }
 
 setup(
@@ -12,3 +12,4 @@ setup(
     options={'py2app': OPTIONS},
     setup_requires=['py2app'],
 )
+
