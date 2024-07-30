@@ -5,10 +5,10 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import csv
 import math
+import multiprocessing as mp
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QProgressBar, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit
 from PySide6.QtCore import Qt, QThread, Signal
-
 
 import cv2
 import numpy as np
@@ -58,109 +58,72 @@ def gen_mask(pattern, c, image):
 
     return np.kron(cells, color_kern(pattern, c))
 
-
 def color_pipeline(raw, setup, bpp=12):
-    """Order from:
-    http://www.visionresearch.com/phantomzone/viewtopic.php?f=20&t=572#p3884
-    """
-    # 1. Offset the raw image by the amount in flare
-
-    # 2. White balance the raw picture using the white balance component of cmatrix
     BayerPatterns = {3: "gbrg", 4: "rggb"}
     pattern = BayerPatterns[setup.CFA]
 
     raw = whitebalance_raw(raw.astype(np.float32), setup, pattern).astype(np.uint16)
-
-    # 3. Debayer the image
     rgb_image = cv2.cvtColor(raw, cv2.COLOR_BAYER_GB2RGB)
-
-    # convert to float
     rgb_image = rgb_image.astype(np.float32) / (2**bpp - 1)
 
-    # return rgb_image
-
-    # 4. Apply the color correction matrix component of cmatrix
-    #
-    # From the documentation:
-    # ...should decompose this
-    # matrix in two components: a diagonal one with the white balance to be
-    # applied before interpolation and a normalized one to be applied after
-    # interpolation.
-
     cmCalib = np.asarray(setup.cmCalib).reshape(3, 3)
-
-    # normalize matrix
-    ccm = cmCalib / cmCalib.sum(axis=1)[:, np.newaxis]
-
-    # or should it be normalized this way?
-    ccm2 = cmCalib.copy()
-    ccm2[0][0] = 1 - ccm2[0][1] - ccm2[0][2]
-    ccm2[1][1] = 1 - ccm2[1][0] - ccm2[1][2]
-    ccm2[2][2] = 1 - ccm2[2][0] - ccm2[2][1]
-
-    m = np.asarray(
-        [
-            1.4956012040024347,
-            -0.5162879962189262,
-            0.020686792216491584,
-            -0.09884672458400766,
-            0.757682383759598,
-            0.34116434082440983,
-            -0.04121405804689133,
-            -0.5527871476076358,
-            1.5940012056545272,
-        ]
-    ).reshape(3, 3)
+    m = np.asarray([
+        1.4956012040024347, -0.5162879962189262, 0.020686792216491584,
+        -0.09884672458400766, 0.757682383759598, 0.34116434082440983,
+        -0.04121405804689133, -0.5527871476076358, 1.5940012056545272
+    ]).reshape(3, 3)
 
     rgb_image = np.dot(rgb_image, m.T)
-    # rgb_reshaped = rgb_image.reshape((rgb_image.shape[0] * rgb_image.shape[1], rgb_image.shape[2]))
-    # rgb_image = np.dot(m, rgb_reshaped.T).T.reshape(rgb_image.shape)
-
-    # 5. Apply the user RGB matrix umatrix
-    # cmUser = np.asarray(setup.cmUser).reshape(3, 3)
-    # rgb_image = np.dot(rgb_image, cmUser.T)
-
-    # 6. Offset the image by the amount in offset
-
-    # 7. Apply the global gain
-
-    # 8. Apply the per-component gains red, green, blue
-
-    # 9. Apply the gamma curves; the green channel uses gamma, red uses gamma + rgamma and blue uses gamma + bgamma
     rgb_image = apply_gamma(rgb_image, setup)
-
-    # 10. Apply the tone curve to each of the red, green, blue channels
-    fTone = np.asarray(setup.fTone)
-
-    # 11. Add the pedestals to each color channel, and linearly rescale to keep the white point the same.
-
-    # 12. Convert to YCrCb using REC709 coefficients
-
-    # 13. Scale the Cr and Cb components by chroma.
-
-    # 14. Rotate the Cr and Cb components around the origin in the CrCb plane by hue degrees.
 
     return rgb_image
 
-
 def to_3ch_gray(frame: np.ndarray):
-    return cv2.cvtColor((frame * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)[
-        ..., None
-    ].repeat(3, axis=-1)
+    return cv2.cvtColor((frame * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)[..., None].repeat(3, axis=-1)
 
-
-def get_frames(
-    video_path: str, start_frame: int, count: int, stride: int = 1, cfa: int = 3
-):
-    raw_images, setup, bpp = read_frames(
-        video_path, start_frame=start_frame, count=count
-    )
-    setup.CFA = cfa
-
+def process_batch(args):
+    video_path, start_frame, count, stride, setup, bpp = args
+    raw_images, _, _ = read_frames(video_path, start_frame=start_frame, count=count)
+    processed_frames = []
     for i, raw_image in enumerate(raw_images):
         if i % stride == 0:
-            yield to_3ch_gray(color_pipeline(raw_image, setup=setup, bpp=bpp))
+            processed = to_3ch_gray(color_pipeline(raw_image, setup=setup, bpp=bpp))
+            processed_frames.append(processed)
+    return processed_frames
 
+def get_frames(video_path: str, start_frame: int, count: int = None, stride: int = 1, cfa: int = 3):
+    header = read_header(video_path)
+    total_frames = header["cinefileheader"].ImageCount
+    
+    if count is None:
+        count = total_frames - start_frame
+    else:
+        count = min(count, total_frames - start_frame)
+
+    # 멀티프로세싱을 위한 배치 크기 설정
+    batch_size = 100
+    num_batches = math.ceil(count / batch_size)
+
+    with mp.Pool() as pool:
+        for batch in range(num_batches):
+            batch_start = start_frame + batch * batch_size
+            batch_count = min(batch_size, count - batch * batch_size)
+            
+            args = (video_path, batch_start, batch_count, stride, cfa)
+            for frame in pool.imap(process_batch, [args]):
+                yield from frame
+
+def process_batch(args):
+    video_path, batch_start, batch_count, stride, cfa = args
+    raw_images, setup, bpp = read_frames(video_path, start_frame=batch_start, count=batch_count)
+    setup.CFA = cfa
+    
+    processed_frames = []
+    for i, raw_image in enumerate(raw_images):
+        if i % stride == 0:
+            processed = to_3ch_gray(color_pipeline(raw_image, setup=setup, bpp=bpp))
+            processed_frames.append(processed)
+    return processed_frames
 class FrameExtractorThread(QThread):
     progress = Signal(int)
     log = Signal(str)
@@ -194,13 +157,15 @@ class FrameExtractorThread(QThread):
         group_interval = timedelta(milliseconds=300)
         total_groups = math.ceil(total_duration / group_interval)
 
-        frames = get_frames(self.video_path, self.start_frame, self.frame_count, self.stride)
-        total_frames_to_process = np.ceil((self.frame_count or total_frames) / self.stride)
+        frames = get_frames(str(self.video_path), self.start_frame, self.frame_count, self.stride)
+   
+        total_frames_to_process = total_frames if self.frame_count is None else min(self.frame_count, total_frames - self.start_frame)
+        total_frames_to_process = math.ceil(total_frames_to_process / self.stride)
 
         max_digits = len(str(total_frames))
         time_format = "%y%m%d_%H%M%S.%f"
 
-        csv_file = self.save_dir / f"{self.video_path.stem}_processing_log.csv"
+        csv_file = self.save_dir / f"{Path(self.video_path).stem}_processing_log.csv"
         csv_file.parent.mkdir(parents=True, exist_ok=True)
 
         with open(csv_file, 'w', newline='') as csvfile:
@@ -217,24 +182,23 @@ class FrameExtractorThread(QThread):
                     current_group += 1
                     group_start_time = frame_time
                 
-                group_dir = self.save_dir / self.video_path.stem / f"frame_group_{current_group:04d}of{total_groups:04d}"
+                group_dir = self.save_dir / Path(self.video_path).stem / f"frame_group_{current_group:04d}of{total_groups:04d}"
                 group_dir.mkdir(parents=True, exist_ok=True)
 
-                filename = f"{i*self.stride:0{max_digits}d}_{self.video_path.stem}_{frame_time.strftime(time_format)}.png"
+                filename = f"{(self.start_frame + i*self.stride):0{max_digits}d}_{Path(self.video_path).stem}_{frame_time.strftime(time_format)}.png"
                 save_path = group_dir / filename
 
                 cv2.imwrite(save_path.as_posix(), frame)
 
-                csv_writer.writerow([i*self.stride, frame_time.strftime(time_format), current_group, filename])
+                csv_writer.writerow([self.start_frame + i*self.stride, frame_time.strftime(time_format), current_group, filename])
 
                 progress = int((i + 1) / total_frames_to_process * 100)
                 self.progress.emit(progress)
-                self.log.emit(f"Processed frame {i*self.stride} of {total_frames}")
+                self.log.emit(f"Processed frame {self.start_frame + i*self.stride} of {total_frames}")
 
         end_time = time.time()
         total_time = end_time - start_time
         self.finished.emit(total_time)
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
