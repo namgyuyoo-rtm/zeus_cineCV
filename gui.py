@@ -1,14 +1,15 @@
 import sys
-import argparse
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
 import csv
 import math
+import multiprocessing
+import zipfile
+import os
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QProgressBar, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit
 from PySide6.QtCore import Qt, QThread, Signal
-
 
 import cv2
 import numpy as np
@@ -148,31 +149,44 @@ def to_3ch_gray(frame: np.ndarray):
         ..., None
     ].repeat(3, axis=-1)
 
+import sys
+import time
+from pathlib import Path
+from datetime import datetime, timedelta
+import csv
+import math
+import multiprocessing
+import zipfile
+import os
 
-def get_frames(
-    video_path: str, start_frame: int, count: int, stride: int = 1, cfa: int = 3
-):
-    raw_images, setup, bpp = read_frames(
-        video_path, start_frame=start_frame, count=count
-    )
-    setup.CFA = cfa
+from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QProgressBar, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit
+from PySide6.QtCore import Qt, QThread, Signal
 
-    for i, raw_image in enumerate(raw_images):
-        if i % stride == 0:
-            yield to_3ch_gray(color_pipeline(raw_image, setup=setup, bpp=bpp))
+import cv2
+import numpy as np
+from tqdm import tqdm
+from pycine.raw import read_frames
+from pycine.file import read_header
+
+# 기존 함수들 (apply_gamma, whitebalance_raw, gen_mask, color_pipeline, to_3ch_gray)은 그대로 유지
+
+def process_frame(args):
+    frame, setup, bpp, save_path = args
+    processed_frame = to_3ch_gray(color_pipeline(frame, setup=setup, bpp=bpp))
+    cv2.imwrite(str(save_path), processed_frame)
+    return save_path
 
 class FrameExtractorThread(QThread):
     progress = Signal(int)
     log = Signal(str)
     finished = Signal(float)
 
-    def __init__(self, video_path, save_dir, start_frame, frame_count, stride):
+    def __init__(self, video_path, save_dir, stride):
         super().__init__()
         self.video_path = video_path
         self.save_dir = save_dir
-        self.start_frame = start_frame
-        self.frame_count = frame_count
         self.stride = stride
+        self.stop_flag = False
 
     def run(self):
         start_time = time.time()
@@ -194,13 +208,24 @@ class FrameExtractorThread(QThread):
         group_interval = timedelta(milliseconds=300)
         total_groups = math.ceil(total_duration / group_interval)
 
-        frames = get_frames(self.video_path, self.start_frame, self.frame_count, self.stride)
-        total_frames_to_process = np.ceil((self.frame_count or total_frames) / self.stride)
+        raw_images_gen = read_frames(self.video_path)
+        first_frame_data = next(raw_images_gen)
+        
+        # 첫 번째 프레임에서 setup과 bpp 정보 추출
+        if isinstance(first_frame_data, tuple) and len(first_frame_data) == 3:
+            first_frame, setup, bpp = first_frame_data
+        else:
+            self.log.emit("Unexpected data structure from read_frames")
+            return
+
+        setup.CFA = 3  # Assuming CFA is always 3, modify if needed
+
+        total_frames_to_process = total_frames // self.stride
 
         max_digits = len(str(total_frames))
         time_format = "%y%m%d_%H%M%S.%f"
 
-        csv_file = self.save_dir / f"{self.video_path.stem}_processing_log.csv"
+        csv_file = self.save_dir / f"{Path(self.video_path).stem}_processing_log.csv"
         csv_file.parent.mkdir(parents=True, exist_ok=True)
 
         with open(csv_file, 'w', newline='') as csvfile:
@@ -210,31 +235,77 @@ class FrameExtractorThread(QThread):
             current_group = 1
             group_start_time = start_time_frame
 
-            for i, frame in enumerate(frames):
-                frame_time = start_time_frame + i * self.stride * time_per_frame
+            # 멀티프로세싱 설정
+            pool = multiprocessing.Pool()
+            frame_data = []
+
+            # 첫 번째 프레임 처리
+            frame_time = start_time_frame
+            group_dir = self.save_dir / Path(self.video_path).stem / f"frame_group_{current_group:04d}of{total_groups:04d}"
+            group_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"0_{Path(self.video_path).stem}_{frame_time.strftime(time_format)}.png"
+            save_path = group_dir / filename
+            frame_data.append((first_frame, setup, bpp, save_path))
+            csv_writer.writerow([0, frame_time.strftime(time_format), current_group, filename])
+
+            # 나머지 프레임 처리
+            for i, (frame, _, _) in enumerate(raw_images_gen, start=1):
+                if self.stop_flag:
+                    pool.terminate()
+                    self.log.emit("Extraction stopped by user")
+                    return
+
+                if i % self.stride != 0:
+                    continue
+
+                frame_time = start_time_frame + i * time_per_frame
                 
                 if frame_time - group_start_time >= group_interval:
                     current_group += 1
                     group_start_time = frame_time
                 
-                group_dir = self.save_dir / self.video_path.stem / f"frame_group_{current_group:04d}of{total_groups:04d}"
+                group_dir = self.save_dir / Path(self.video_path).stem / f"frame_group_{current_group:04d}of{total_groups:04d}"
                 group_dir.mkdir(parents=True, exist_ok=True)
 
-                filename = f"{i*self.stride:0{max_digits}d}_{self.video_path.stem}_{frame_time.strftime(time_format)}.png"
+                filename = f"{i:0{max_digits}d}_{Path(self.video_path).stem}_{frame_time.strftime(time_format)}.png"
                 save_path = group_dir / filename
 
-                cv2.imwrite(save_path.as_posix(), frame)
+                frame_data.append((frame, setup, bpp, save_path))
+                csv_writer.writerow([i, frame_time.strftime(time_format), current_group, filename])
 
-                csv_writer.writerow([i*self.stride, frame_time.strftime(time_format), current_group, filename])
+                if len(frame_data) >= 100:  # 프레임을 100개씩 처리
+                    self.process_frames(pool, frame_data, total_frames)
+                    frame_data = []
 
-                progress = int((i + 1) / total_frames_to_process * 100)
-                self.progress.emit(progress)
-                self.log.emit(f"Processed frame {i*self.stride} of {total_frames}")
+            # 남은 프레임 처리
+            if frame_data:
+                self.process_frames(pool, frame_data, total_frames)
+
+            pool.close()
+            pool.join()
+        # 압축
+        self.log.emit("Compressing extracted frames...")
+        zip_file = self.save_dir / f"{Path(self.video_path).stem}_extracted_frames.zip"
+        with zipfile.ZipFile(zip_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, _, files in os.walk(self.save_dir / Path(self.video_path).stem):
+                for file in files:
+                    zipf.write(os.path.join(root, file), 
+                               os.path.relpath(os.path.join(root, file), 
+                                               self.save_dir / Path(self.video_path).stem))
 
         end_time = time.time()
         total_time = end_time - start_time
         self.finished.emit(total_time)
+        
+    def process_frames(self, pool, frame_data, total_frames):
+        for i, _ in enumerate(pool.imap_unordered(process_frame, frame_data)):
+            progress = int((i + 1) / total_frames * 100)
+            self.progress.emit(progress)
+            self.log.emit(f"Processed frame {i} of {total_frames}")
 
+    def stop(self):
+        self.stop_flag = True
+        
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -266,21 +337,21 @@ class MainWindow(QMainWindow):
 
         # Parameters
         param_layout = QHBoxLayout()
-        self.start_frame = QLineEdit("0")
-        self.frame_count = QLineEdit("None")
         self.stride = QLineEdit("10")
-        param_layout.addWidget(QLabel("Start Frame:"))
-        param_layout.addWidget(self.start_frame)
-        param_layout.addWidget(QLabel("Frame Count:"))
-        param_layout.addWidget(self.frame_count)
         param_layout.addWidget(QLabel("Stride:"))
         param_layout.addWidget(self.stride)
         layout.addLayout(param_layout)
 
-        # Extract button
+        # Extract and Stop buttons
+        button_layout = QHBoxLayout()
         self.extract_button = QPushButton("Extract Frames")
         self.extract_button.clicked.connect(self.start_extraction)
-        layout.addWidget(self.extract_button)
+        self.stop_button = QPushButton("Stop Extraction")
+        self.stop_button.clicked.connect(self.stop_extraction)
+        self.stop_button.setEnabled(False)
+        button_layout.addWidget(self.extract_button)
+        button_layout.addWidget(self.stop_button)
+        layout.addLayout(button_layout)
 
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -306,17 +377,21 @@ class MainWindow(QMainWindow):
     def start_extraction(self):
         input_path = Path(self.input_path.text())
         output_path = Path(self.output_path.text())
-        start_frame = int(self.start_frame.text())
-        frame_count = None if self.frame_count.text() == "None" else int(self.frame_count.text())
         stride = int(self.stride.text())
 
-        self.extractor_thread = FrameExtractorThread(input_path, output_path, start_frame, frame_count, stride)
+        self.extractor_thread = FrameExtractorThread(input_path, output_path, stride)
         self.extractor_thread.progress.connect(self.update_progress)
         self.extractor_thread.log.connect(self.update_log)
         self.extractor_thread.finished.connect(self.extraction_finished)
         self.extractor_thread.start()
 
         self.extract_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+
+    def stop_extraction(self):
+        if hasattr(self, 'extractor_thread'):
+            self.extractor_thread.stop()
+        self.stop_button.setEnabled(False)
 
     def update_progress(self, value):
         self.progress_bar.setValue(value)
@@ -327,6 +402,7 @@ class MainWindow(QMainWindow):
     def extraction_finished(self, total_time):
         self.log_output.append(f"Extraction completed in {total_time:.2f} seconds")
         self.extract_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
