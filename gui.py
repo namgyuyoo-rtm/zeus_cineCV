@@ -7,11 +7,6 @@ import csv
 import math
 import concurrent.futures
 
-import os
-import psutil
-from mmap import mmap
-
-
 from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QProgressBar, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit
 from PySide6.QtCore import Qt, QThread, Signal
 
@@ -144,11 +139,6 @@ class FrameExtractorThread(QThread):
         self.start_frame = start_frame
         self.frame_count = frame_count
         self.stride = stride
-<<<<<<< HEAD
-        self.is_paused = False
-        self.is_stopped = False
-=======
->>>>>>> parent of e683090 (CINE 프레임 추출기 기능 및 성능 개선)
 
     def run(self):
         start_time = time.time()
@@ -164,7 +154,11 @@ class FrameExtractorThread(QThread):
         end_time = start_time_frame + timedelta(seconds=total_frames / frame_rate)
         time_per_frame = timedelta(seconds=1 / frame_rate)
 
-        self.log.emit(f"Start Time: {start_time_frame}, End Time: {end_time}, Time per Frame: {time_per_frame.total_seconds():.6f} seconds")
+        self.log.emit(f"Start Time: {start_time_frame}, End Time: {end_time}, Time per Frame: {time_per_frame}")
+
+        total_duration = end_time - start_time_frame
+        group_interval = timedelta(milliseconds=300)
+        total_groups = math.ceil(total_duration / group_interval)
 
         frames = get_frames(str(self.video_path), self.start_frame, self.frame_count, self.stride)
    
@@ -177,55 +171,10 @@ class FrameExtractorThread(QThread):
         csv_file = self.save_dir / f"{Path(self.video_path).stem}_processing_log.csv"
         csv_file.parent.mkdir(parents=True, exist_ok=True)
 
-        chunk_size = 1000  # 한 번에 처리할 프레임 수
-        
         with open(csv_file, 'w', newline='') as csvfile:
             csv_writer = csv.writer(csvfile)
-            csv_writer.writerow(["Frame Number", "Timestamp", "Filename"])
+            csv_writer.writerow(["Frame Number", "Timestamp", "Group", "Filename"])
 
-<<<<<<< HEAD
-            frames_processed = 0
-            
-            with open(self.video_path, 'rb') as f:
-                mm = mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-                
-                while frames_processed < total_frames_to_process and not self.is_stopped:
-                    while self.is_paused:
-                        time.sleep(0.1)
-                        if self.is_stopped:
-                            break
-
-                    if self.is_stopped:
-                        break
-
-                    chunk_frames = min(chunk_size, total_frames_to_process - frames_processed)
-                    chunk_start = self.start_frame + frames_processed * self.stride
-                    
-                    frames = self.get_frames_chunk(mm, chunk_start, chunk_frames, header)
-
-                    for i, frame in enumerate(frames):
-                        frame_number = chunk_start + i * self.stride
-                        frame_time = start_time_frame + frame_number * time_per_frame
-
-                        filename = f"{frame_number:0{max_digits}d}_{Path(self.video_path).stem}_{frame_time.strftime(time_format)}.png"
-                        save_path = self.save_dir / filename
-
-                        cv2.imwrite(save_path.as_posix(), frame)
-
-                        csv_writer.writerow([frame_number, frame_time.strftime(time_format), filename])
-
-                        frames_processed += 1
-                        if frames_processed % 10 == 0:  # 10프레임마다 진행 상황 업데이트
-                            progress = int(frames_processed / total_frames_to_process * 100)
-                            self.progress.emit(progress)
-                            self.log.emit(f"Processed frame {frame_number} of {total_frames}")
-
-                    # 메모리 사용량 확인 및 정리
-                    if psutil.virtual_memory().percent > 80:
-                        gc.collect()
-
-                mm.close()
-=======
             current_group = 1
             group_start_time = start_time_frame
 
@@ -249,62 +198,10 @@ class FrameExtractorThread(QThread):
                 progress = int((i + 1) / total_frames_to_process * 100)
                 self.progress.emit(progress)
                 self.log.emit(f"Processed frame {self.start_frame + i*self.stride} of {total_frames}")
->>>>>>> parent of e683090 (CINE 프레임 추출기 기능 및 성능 개선)
 
         end_time = time.time()
         total_time = end_time - start_time
         self.finished.emit(total_time)
-<<<<<<< HEAD
-    def get_frames_chunk(self, mm, start_frame, count, header):
-        frames = []
-        setup = header['setup']
-        bpp = setup.BitDepth
-
-        # CINE 파일의 프레임 오프셋 정보 가져오기
-        frame_offsets = header['imageoffsets']
-        
-        for i in range(count):
-            current_frame = start_frame + i
-            if current_frame >= len(frame_offsets):
-                break
-
-            # 현재 프레임의 오프셋과 다음 프레임의 오프셋을 이용해 프레임 크기 계산
-            current_offset = frame_offsets[current_frame]
-            next_offset = frame_offsets[current_frame + 1] if current_frame + 1 < len(frame_offsets) else len(mm)
-            frame_size = next_offset - current_offset
-
-            # 메모리 맵에서 프레임 데이터 읽기
-            mm.seek(current_offset)
-            frame_data = mm.read(frame_size)
-
-            # 프레임 데이터를 numpy 배열로 변환
-            frame_array = np.frombuffer(frame_data, dtype=np.uint16)
-            frame_array = frame_array.reshape((setup.ImWidth, setup.ImHeight))
-
-            # 프레임 처리 (color_pipeline 및 to_3ch_gray 적용)
-            processed_frame = self.process_frame(frame_array, setup, bpp)
-            
-            frames.append(processed_frame)
-
-            # 메모리 사용량 체크 및 필요시 가비지 컬렉션
-            if psutil.virtual_memory().percent > 80:
-                gc.collect()
-
-        return frames
-
-    def process_frame(self, frame_array, setup, bpp):
-        # color_pipeline 적용
-        rgb_image = color_pipeline(frame_array, setup, bpp)
-        
-        # to_3ch_gray 적용
-        gray_image = to_3ch_gray(rgb_image)
-        
-        return gray_image
-
-
-        start_time = time.time()
-=======
->>>>>>> parent of e683090 (CINE 프레임 추출기 기능 및 성능 개선)
         
 class MainWindow(QMainWindow):
     def __init__(self):
