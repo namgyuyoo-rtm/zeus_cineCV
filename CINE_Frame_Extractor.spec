@@ -16,14 +16,12 @@ a = Analysis(
     cipher=None,
     noarchive=False,
 )
-
 pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
-    a.zipfiles,
     a.datas,
     [],
     name='CINE_Frame_Extractor',
