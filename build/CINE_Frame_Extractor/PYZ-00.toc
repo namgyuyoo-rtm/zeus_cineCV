@@ -206,6 +206,9 @@
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.1264.0_x64__qbz5n2kfra8p0\\Lib\\calendar.py',
    'PYMODULE'),
+  ('cine_settings',
+   'C:\\Users\\알티엠\\Development\\zeus_cineCV\\cine_settings.py',
+   'PYMODULE'),
   ('cmd',
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.1264.0_x64__qbz5n2kfra8p0\\Lib\\cmd.py',
@@ -377,6 +380,9 @@
   ('fractions',
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.1264.0_x64__qbz5n2kfra8p0\\Lib\\fractions.py',
+   'PYMODULE'),
+  ('frame_extractor',
+   'C:\\Users\\알티엠\\Development\\zeus_cineCV\\frame_extractor.py',
    'PYMODULE'),
   ('ftplib',
    'C:\\Program '
@@ -553,6 +559,9 @@
   ('lzma',
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.1264.0_x64__qbz5n2kfra8p0\\Lib\\lzma.py',
+   'PYMODULE'),
+  ('mainclass',
+   'C:\\Users\\알티엠\\Development\\zeus_cineCV\\mainclass.py',
    'PYMODULE'),
   ('mimetypes',
    'C:\\Program '
@@ -1097,6 +1106,18 @@
   ('pprint',
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.1264.0_x64__qbz5n2kfra8p0\\Lib\\pprint.py',
+   'PYMODULE'),
+  ('psutil',
+   'c:\\Users\\알티엠\\Development\\zeus_cineCV\\.venv\\Lib\\site-packages\\psutil\\__init__.py',
+   'PYMODULE'),
+  ('psutil._common',
+   'c:\\Users\\알티엠\\Development\\zeus_cineCV\\.venv\\Lib\\site-packages\\psutil\\_common.py',
+   'PYMODULE'),
+  ('psutil._compat',
+   'c:\\Users\\알티엠\\Development\\zeus_cineCV\\.venv\\Lib\\site-packages\\psutil\\_compat.py',
+   'PYMODULE'),
+  ('psutil._pswindows',
+   'c:\\Users\\알티엠\\Development\\zeus_cineCV\\.venv\\Lib\\site-packages\\psutil\\_pswindows.py',
    'PYMODULE'),
   ('py_compile',
    'C:\\Program '
