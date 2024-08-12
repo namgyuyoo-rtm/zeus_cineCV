@@ -1,6 +1,6 @@
 # mainclass.py
 
-from PySide6.QtWidgets import QMainWindow, QFileDialog, QProgressBar, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit
+from PySide6.QtWidgets import QMainWindow, QFileDialog, QProgressBar, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit, QMessageBox
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from pathlib import Path
@@ -12,7 +12,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("CINE Frame Extractor")
         self.setGeometry(100, 100, 600, 400)
-        self.setAcceptDrops(True)  # 드래그 앤 드롭 활성화
+        self.setAcceptDrops(True)
 
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -107,14 +107,24 @@ class MainWindow(QMainWindow):
     def start_extraction(self):
         input_path = Path(self.input_path.text())
         output_path = Path(self.output_path.text())
-        start_frame = int(self.start_frame.text())
-        frame_count = None if self.frame_count.text().lower() == "none" else int(self.frame_count.text())
-        stride = int(self.stride.text())
+        
+        try:
+            start_frame = int(self.start_frame.text())
+            frame_count = None if self.frame_count.text().lower() == "none" else int(self.frame_count.text())
+            stride = int(self.stride.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter valid numbers for Start Frame, Frame Count, and Stride.")
+            return
+
+        if not input_path.exists():
+            QMessageBox.warning(self, "File Not Found", "The specified CINE file does not exist.")
+            return
 
         self.extractor_thread = FrameExtractorThread(input_path, output_path, start_frame, frame_count, stride)
         self.extractor_thread.progress.connect(self.update_progress)
         self.extractor_thread.log.connect(self.update_log)
         self.extractor_thread.finished.connect(self.extraction_finished)
+        self.extractor_thread.error.connect(self.extraction_error)
         self.extractor_thread.start()
 
         self.extract_button.setEnabled(False)
@@ -146,3 +156,24 @@ class MainWindow(QMainWindow):
         self.extract_button.setEnabled(True)
         self.pause_resume_button.setEnabled(False)
         self.stop_button.setEnabled(False)
+        QMessageBox.information(self, "Extraction Complete", f"Frame extraction completed in {total_time:.2f} seconds")
+
+    def extraction_error(self, error_message):
+        self.log_output.append(f"Error: {error_message}")
+        self.extract_button.setEnabled(True)
+        self.pause_resume_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
+        QMessageBox.critical(self, "Extraction Error", f"An error occurred during extraction:\n\n{error_message}")
+
+    def closeEvent(self, event):
+        if hasattr(self, 'extractor_thread') and self.extractor_thread.isRunning():
+            reply = QMessageBox.question(self, 'Exit', 'Extraction is still in progress. Are you sure you want to quit?',
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.extractor_thread.stop()
+                self.extractor_thread.wait()
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
