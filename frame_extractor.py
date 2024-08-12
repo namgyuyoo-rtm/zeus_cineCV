@@ -58,114 +58,112 @@ class FrameExtractorThread(QThread):
     log = Signal(str)
     finished = Signal(float)
     error = Signal(str)
-
-    def __init__(self, video_path, save_dir, start_frame, frame_count, stride):
+    
+    def __init__(self, video_path, save_dir, start_frame, frame_count, stride, base_filename):
         super().__init__()
         self.video_path = video_path
         self.save_dir = save_dir
         self.start_frame = start_frame
         self.frame_count = frame_count
         self.stride = stride
+        self.base_filename = base_filename
         self.is_paused = False
         self.is_stopped = False
 
     def run(self):
-        try:
-            start_time = time.time()
-            
-            header = read_header(self.video_path)
-            trigger_time = header["cinefileheader"].TriggerTime
-            total_frames = header["cinefileheader"].ImageCount
-            frame_rate = header["setup"].FrameRate
+            try:
+                start_time = time.time()
+                
+                header = read_header(self.video_path)
+                trigger_time = header["cinefileheader"].TriggerTime
+                total_frames = header["cinefileheader"].ImageCount
+                frame_rate = header["setup"].FrameRate
 
-            self.log.emit(f"Total Frames: {total_frames}, Frame Rate: {frame_rate}")
+                self.log.emit(f"Total Frames: {total_frames}, Frame Rate: {frame_rate}")
 
-            start_time_frame = datetime.fromtimestamp(trigger_time.seconds + trigger_time.fractions / 1e6)
-            end_time = start_time_frame + timedelta(seconds=total_frames / frame_rate)
-            time_per_frame = timedelta(seconds=1 / frame_rate)
+                start_time_frame = datetime.fromtimestamp(trigger_time.seconds + trigger_time.fractions / 1e6)
+                end_time = start_time_frame + timedelta(seconds=total_frames / frame_rate)
+                time_per_frame = timedelta(seconds=1 / frame_rate)
 
-            self.log.emit(f"Start Time: {start_time_frame}, End Time: {end_time}, Time per Frame: {time_per_frame.total_seconds():.6f} seconds")
+                self.log.emit(f"Start Time: {start_time_frame}, End Time: {end_time}, Time per Frame: {time_per_frame.total_seconds():.6f} seconds")
 
-            total_duration = end_time - start_time_frame
-            group_interval = timedelta(milliseconds=300)
-            total_groups = math.ceil(total_duration / group_interval)
+                total_duration = end_time - start_time_frame
+                group_interval = timedelta(milliseconds=300)
+                total_groups = math.ceil(total_duration / group_interval)
 
-            total_frames_to_process = total_frames if self.frame_count is None else min(self.frame_count, total_frames - self.start_frame)
-            total_frames_to_process = math.ceil(total_frames_to_process / self.stride)
+                total_frames_to_process = total_frames if self.frame_count is None else min(self.frame_count, total_frames - self.start_frame)
+                total_frames_to_process = math.ceil(total_frames_to_process / self.stride)
 
-            max_digits = len(str(total_frames))
-            time_format = "%y%m%d_%H%M%S.%f"
+                max_digits = len(str(total_frames))
+                time_format = "%y%m%d_%H%M%S.%f"
 
-            csv_file = self.save_dir / f"{Path(self.video_path).stem}_processing_log.csv"
-            csv_file.parent.mkdir(parents=True, exist_ok=True)
+                csv_file = self.save_dir / f"{self.base_filename}_processing_log.csv"
+                csv_file.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(csv_file, 'w', newline='') as csvfile:
-                csv_writer = csv.writer(csvfile)
-                csv_writer.writerow(["Frame Number", "Timestamp", "Group", "Filename"])
+                with open(csv_file, 'w', newline='') as csvfile:
+                    csv_writer = csv.writer(csvfile)
+                    csv_writer.writerow(["Frame Number", "Timestamp", "Group", "Filename"])
 
-                current_group = 1
-                group_start_time = start_time_frame
-                frames_processed = 0
+                    current_group = 1
+                    group_start_time = start_time_frame
+                    frames_processed = 0
 
-                frame_generator = get_frames(str(self.video_path), self.start_frame, total_frames_to_process * self.stride, self.stride)
+                    frame_generator = get_frames(str(self.video_path), self.start_frame, total_frames_to_process * self.stride, self.stride)
 
-                for frame_index, frame in enumerate(frame_generator):
-                    if self.is_stopped:
-                        break
-
-                    while self.is_paused:
-                        time.sleep(0.1)
+                    for frame_index, frame in enumerate(frame_generator):
                         if self.is_stopped:
                             break
 
-                    if self.is_stopped:
-                        break
+                        while self.is_paused:
+                            time.sleep(0.1)
+                            if self.is_stopped:
+                                break
 
-                    frame_number = self.start_frame + frame_index * self.stride
-                    frame_time = start_time_frame + frame_number * time_per_frame
-                    
-                    if frame_time - group_start_time >= group_interval:
-                        current_group += 1
-                        group_start_time = frame_time
-                    
-                    group_dir = Path(self.save_dir) / Path(self.video_path).stem / f"frame_group_{current_group:04d}of{total_groups:04d}"
-                    group_dir.mkdir(parents=True, exist_ok=True)
+                        if self.is_stopped:
+                            break
 
-                    filename = f"{frame_number:0{max_digits}d}_{Path(self.video_path).stem}_{frame_time.strftime(time_format)}.png"
-                    save_path = group_dir / filename
-
-                    try:
-                        cv2.imwrite(str(save_path), frame)
+                        frame_number = self.start_frame + frame_index * self.stride
+                        frame_time = start_time_frame + frame_number * time_per_frame
                         
-                        if save_path.exists():
-                            self.log.emit(f"Saved image: {save_path}")
-                        else:
-                            self.log.emit(f"Failed to save image: {save_path}")
-                    except Exception as e:
-                        self.log.emit(f"Error saving image {save_path}: {str(e)}")
+                        if frame_time - group_start_time >= group_interval:
+                            current_group += 1
+                            group_start_time = frame_time
+                        
+                        filename = f"{self.base_filename}_{frame_number:0{max_digits}d}_{frame_time.strftime(time_format)}.png"
+                        save_path = self.save_dir / filename
 
-                    csv_writer.writerow([frame_number, frame_time.strftime(time_format), current_group, filename])
+                        try:
+                            cv2.imwrite(str(save_path), frame)
+                            
+                            if save_path.exists():
+                                self.log.emit(f"Saved image: {save_path}")
+                            else:
+                                self.log.emit(f"Failed to save image: {save_path}")
+                        except Exception as e:
+                            self.log.emit(f"Error saving image {save_path}: {str(e)}")
 
-                    frames_processed += 1
-                    progress = int(frames_processed / total_frames_to_process * 100)
-                    self.progress.emit(progress)
-                    self.log.emit(f"Processed frame {frame_number} of {total_frames}")
+                        csv_writer.writerow([frame_number, frame_time.strftime(time_format), current_group, filename])
 
-                    if frames_processed % 10 == 0:
-                        mem = psutil.virtual_memory()
-                        self.log.emit(f"Memory usage: {mem.percent}% (Used: {mem.used / 1024 / 1024:.2f} MB, Available: {mem.available / 1024 / 1024:.2f} MB)")
+                        frames_processed += 1
+                        progress = int(frames_processed / total_frames_to_process * 100)
+                        self.progress.emit(progress)
+                        self.log.emit(f"Processed frame {frame_number} of {total_frames}")
 
-                del frame_generator
-                gc.collect()
+                        if frames_processed % 10 == 0:
+                            mem = psutil.virtual_memory()
+                            self.log.emit(f"Memory usage: {mem.percent}% (Used: {mem.used / 1024 / 1024:.2f} MB, Available: {mem.available / 1024 / 1024:.2f} MB)")
 
-            end_time = time.time()
-            total_time = end_time - start_time
-            self.finished.emit(total_time)
-        
-        except Exception as e:
-            self.error.emit(f"An error occurred: {str(e)}")
-            import traceback
-            self.log.emit(f"Traceback: {traceback.format_exc()}")
+                    del frame_generator
+                    gc.collect()
+
+                end_time = time.time()
+                total_time = end_time - start_time
+                self.finished.emit(total_time)
+            
+            except Exception as e:
+                self.error.emit(f"An error occurred: {str(e)}")
+                import traceback
+                self.log.emit(f"Traceback: {traceback.format_exc()}")
 
     def pause(self):
         self.is_paused = True
